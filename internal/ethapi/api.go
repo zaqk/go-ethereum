@@ -2269,9 +2269,8 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 	var baseFee *big.Int
 	if args.BaseFee != nil {
 		baseFee = args.BaseFee
-	} else if s.b.ChainConfig().IsLondon(big.NewInt(args.BlockNumber.Int64())) {
-		baseFee = misc.CalcBaseFee(s.b.ChainConfig(), parent)
 	}
+
 	header := &types.Header{
 		ParentHash: parent.Hash(),
 		Number:     blockNumber,
@@ -2292,7 +2291,7 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 	coinbaseBalanceBefore := state.GetBalance(coinbase)
 
 	bundleHash := sha3.NewLegacyKeccak256()
-	signer := types.MakeSigner(s.b.ChainConfig(), blockNumber)
+	signer := types.MakeSigner(s.b.ChainConfig(), blockNumber, *args.Timestamp)
 	var totalGasUsed uint64
 	gasFees := new(big.Int)
 	for i, tx := range txs {
