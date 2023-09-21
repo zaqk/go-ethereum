@@ -2199,6 +2199,7 @@ type CallBundleArgs struct {
 	GasLimit               *uint64               `json:"gasLimit"`
 	Difficulty             *big.Int              `json:"difficulty"`
 	BaseFee                *big.Int              `json:"baseFee"`
+	Senders                []common.Address      `json:"senders"`
 }
 
 // CallBundle will simulate a bundle of transactions at the top of a given block
@@ -2208,6 +2209,7 @@ type CallBundleArgs struct {
 // The sender is responsible for signing the transactions and using the correct
 // nonce and ensuring validity
 func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[string]interface{}, error) {
+
 	if len(args.Txs) == 0 {
 		return nil, errors.New("bundle missing txs")
 	}
@@ -2216,7 +2218,6 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 	}
 
 	var txs types.Transactions
-
 	for _, encodedTx := range args.Txs {
 		tx := new(types.Transaction)
 		if err := tx.UnmarshalBinary(encodedTx); err != nil {
@@ -2224,6 +2225,7 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 		}
 		txs = append(txs, tx)
 	}
+
 	defer func(start time.Time) { log.Debug("Executing EVM call finished", "runtime", time.Since(start)) }(time.Now())
 
 	timeoutMilliSeconds := int64(5000)
@@ -2269,6 +2271,8 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 	var baseFee *big.Int
 	if args.BaseFee != nil {
 		baseFee = args.BaseFee
+	} else if s.b.ChainConfig().IsLondon(big.NewInt(args.BlockNumber.Int64())) {
+		baseFee = eip1559.CalcBaseFee(s.b.ChainConfig(), parent)
 	}
 
 	header := &types.Header{
@@ -2291,7 +2295,7 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 	coinbaseBalanceBefore := state.GetBalance(coinbase)
 
 	bundleHash := sha3.NewLegacyKeccak256()
-	signer := types.MakeSigner(s.b.ChainConfig(), blockNumber, *args.Timestamp)
+	signer := types.MakeSigner(s.b.ChainConfig(), blockNumber, timestamp)
 	var totalGasUsed uint64
 	gasFees := new(big.Int)
 	for i, tx := range txs {
@@ -2309,10 +2313,23 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 		}
 
 		txHash := tx.Hash().String()
-		from, err := types.Sender(signer, tx)
-		if err != nil {
-			return nil, fmt.Errorf("err: %w; txhash %s", err, tx.Hash())
+
+		// retrieve from address, if not given explicitly extract it from the signed tx
+		from := common.Address{}
+
+		// check for sender in args.Senders
+		if i < len(args.Senders) {
+			from = args.Senders[i]
 		}
+
+		// if not found, extract from signed tx
+		if from == (common.Address{}) {
+			from, err = types.Sender(signer, tx)
+			if err != nil {
+				return nil, fmt.Errorf("err: %w; txhash %s", err, tx.Hash())
+			}
+		}
+
 		to := "0x"
 		if tx.To() != nil {
 			to = tx.To().String()
@@ -2323,6 +2340,7 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 			"fromAddress": from.String(),
 			"toAddress":   to,
 		}
+
 		totalGasUsed += receipt.GasUsed
 		gasPrice, err := tx.EffectiveGasTip(header.BaseFee)
 		if err != nil {
@@ -2348,9 +2366,9 @@ func (s *BundleAPI) CallBundle(ctx context.Context, args CallBundleArgs) (map[st
 		jsonResult["ethSentToCoinbase"] = new(big.Int).Sub(coinbaseDiffTx, gasFeesTx).String()
 		jsonResult["gasPrice"] = new(big.Int).Div(coinbaseDiffTx, big.NewInt(int64(receipt.GasUsed))).String()
 		jsonResult["gasUsed"] = receipt.GasUsed
+		jsonResult["logs"] = receipt.Logs
 		results = append(results, jsonResult)
 	}
-
 	ret := map[string]interface{}{}
 	ret["results"] = results
 	coinbaseDiff := new(big.Int).Sub(state.GetBalance(coinbase), coinbaseBalanceBefore)
